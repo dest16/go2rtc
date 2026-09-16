@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -69,5 +70,46 @@ func TestRequestMarksAuthorizationFailures(t *testing.T) {
 	}
 	if !IsUnauthorized(fmt.Errorf("wrapped: %w", err)) {
 		t.Fatal("IsUnauthorized() did not recognize a wrapped error")
+	}
+}
+
+func TestFinishVerifyFollowsConfirmPhoneSkipURL(t *testing.T) {
+	var skipped bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/verify":
+			http.Redirect(w, r, "/fe/confirm?skipUrl=%2Fdone", http.StatusFound)
+		case "/fe/confirm":
+			w.WriteHeader(http.StatusOK)
+		case "/done":
+			skipped = true
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cloud := NewCloud("xiaomiio")
+	if err := cloud.finishVerify(server.URL + "/verify"); err != nil {
+		t.Fatalf("finishVerify() error = %v", err)
+	}
+	if !skipped {
+		t.Fatal("finishVerify() did not follow the confirm-phone skip URL")
+	}
+}
+
+func TestConfirmPhoneSkipURL(t *testing.T) {
+	u, err := url.Parse("https://account.xiaomi.com/fe/confirm?skipUrl=%2Fpass%2FserviceLogin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := confirmPhoneSkipURL(u); got != "/pass/serviceLogin" {
+		t.Fatalf("confirmPhoneSkipURL() = %q", got)
+	}
+
+	u.Path = "/pass/serviceLogin"
+	if got := confirmPhoneSkipURL(u); got != "" {
+		t.Fatalf("confirmPhoneSkipURL() accepted non-confirmation URL: %q", got)
 	}
 }
