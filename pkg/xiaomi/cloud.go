@@ -51,13 +51,35 @@ func (c *Cloud) Login(username, password string) error {
 	}
 
 	var v1 struct {
-		Qs       string `json:"qs"`
-		Sign     string `json:"_sign"`
-		Sid      string `json:"sid"`
-		Callback string `json:"callback"`
+		Code      int             `json:"code"`
+		Qs        string          `json:"qs"`
+		Sign      string          `json:"_sign"`
+		Sid       string          `json:"sid"`
+		Callback  string          `json:"callback"`
+		UserID    json.RawMessage `json:"userId"`
+		Ssecurity []byte          `json:"ssecurity"`
+		PassToken string          `json:"passToken"`
+		Location  string          `json:"location"`
 	}
 	if _, err = readLoginResponse(res.Body, &v1); err != nil {
 		return err
+	}
+
+	// After successful two-factor verification, serviceLogin can already return
+	// the completed authentication payload. In that case serviceLoginAuth2 must
+	// not be called again with empty sign/callback fields.
+	if v1.Code == 0 && v1.Location != "" {
+		if userID := jsonScalarString(v1.UserID); userID != "" {
+			c.userID = userID
+		}
+		if len(v1.Ssecurity) != 0 {
+			c.ssecurity = v1.Ssecurity
+		}
+		if v1.PassToken != "" {
+			c.passToken = v1.PassToken
+		}
+		c.auth = nil
+		return c.finishAuth(v1.Location)
 	}
 
 	hash := fmt.Sprintf("%X", md5.Sum([]byte(password)))
@@ -569,6 +591,24 @@ func (c *Cloud) Request(baseURL, apiURL, params string, headers map[string]strin
 	}
 
 	return res1.Result, nil
+}
+
+func jsonScalarString(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+
+	var n json.Number
+	if err := json.Unmarshal(raw, &n); err == nil {
+		return n.String()
+	}
+
+	return ""
 }
 
 func readLoginResponse(rc io.ReadCloser, v any) ([]byte, error) {
