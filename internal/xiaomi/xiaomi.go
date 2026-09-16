@@ -63,11 +63,29 @@ func getCloud(userID string) (*xiaomi.Cloud, error) {
 	if cloud := clouds[userID]; cloud != nil {
 		return cloud, nil
 	}
+	return loginCloudLocked(userID)
+}
+
+func loginCloudLocked(userID string) (*xiaomi.Cloud, error) {
+	token := tokens[userID]
+	if token == "" {
+		return nil, fmt.Errorf("xiaomi: no token configured for user %s", userID)
+	}
 
 	cloud := xiaomi.NewCloud(AppXiaomiHome)
-	if err := cloud.LoginWithToken(userID, tokens[userID]); err != nil {
+	if err := cloud.LoginWithToken(userID, token); err != nil {
 		return nil, err
 	}
+
+	_, refreshedToken := cloud.UserToken()
+	if refreshedToken != token {
+		if err := app.PatchConfig([]string{"xiaomi", userID}, refreshedToken); err != nil {
+			return nil, fmt.Errorf("xiaomi: persist refreshed token: %w", err)
+		}
+		tokens[userID] = refreshedToken
+		log.Info().Str("user", userID).Msg("xiaomi: refreshed account token")
+	}
+
 	if clouds == nil {
 		clouds = map[string]*xiaomi.Cloud{userID: cloud}
 	} else {
@@ -76,10 +94,32 @@ func getCloud(userID string) (*xiaomi.Cloud, error) {
 	return cloud, nil
 }
 
+func refreshCloud(userID string, stale *xiaomi.Cloud) (*xiaomi.Cloud, error) {
+	cloudsMu.Lock()
+	defer cloudsMu.Unlock()
+
+	if current := clouds[userID]; current != nil && current != stale {
+		return current, nil
+	}
+	delete(clouds, userID)
+	return loginCloudLocked(userID)
+}
+
 func cloudRequest(userID, region, apiURL, params string) ([]byte, error) {
 	cloud, err := getCloud(userID)
 	if err != nil {
 		return nil, err
+	}
+
+	res, err := cloud.Request(GetBaseURL(region), apiURL, params, nil)
+	if !xiaomi.IsUnauthorized(err) {
+		return res, err
+	}
+
+	log.Warn().Str("user", userID).Msg("xiaomi: cloud authorization expired, rebuilding session")
+	cloud, refreshErr := refreshCloud(userID, cloud)
+	if refreshErr != nil {
+		return nil, refreshErr
 	}
 	return cloud.Request(GetBaseURL(region), apiURL, params, nil)
 }
@@ -324,7 +364,8 @@ func apiAuth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err == nil {
-		userID, token := auth.UserToken()
+		completedAuth := auth
+		userID, token := completedAuth.UserToken()
 		auth = nil
 
 		cloudsMu.Lock()
@@ -332,6 +373,11 @@ func apiAuth(w http.ResponseWriter, r *http.Request) {
 			tokens = map[string]string{userID: token}
 		} else {
 			tokens[userID] = token
+		}
+		if clouds == nil {
+			clouds = map[string]*xiaomi.Cloud{userID: completedAuth}
+		} else {
+			clouds[userID] = completedAuth
 		}
 		cloudsMu.Unlock()
 
