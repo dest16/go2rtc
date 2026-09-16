@@ -166,17 +166,62 @@ func (c *Cloud) LoginWithVerify(ticket string) error {
 	}
 
 	var v1 struct {
+		Code     int    `json:"code"`
 		Location string `json:"location"`
 	}
 	body, err := readLoginResponse(res.Body, &v1)
 	if err != nil {
 		return err
 	}
-	if v1.Location == "" {
+	if v1.Code != 0 || v1.Location == "" {
 		return fmt.Errorf("xiaomi: %s", body)
 	}
 
-	return c.finishAuth(v1.Location)
+	username := c.auth["username"]
+	password := c.auth["password"]
+
+	// The verification response only confirms the second factor. It doesn't
+	// contain the credentials required by Xiaomi's encrypted API. Follow its
+	// redirect to commit the trusted session, then run the normal login exchange
+	// again so serviceLoginAuth2 can provide ssecurity and a fresh location.
+	if err = c.finishVerify(v1.Location); err != nil {
+		return err
+	}
+
+	return c.Login(username, password)
+}
+
+func (c *Cloud) finishVerify(location string) error {
+	res, err := c.client.Get(location)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+
+	// Xiaomi can redirect verified accounts to a confirm-phone page. The page
+	// carries a skipUrl back to the service login flow.
+	skipURL := confirmPhoneSkipURL(res.Request.URL)
+	if skipURL == "" {
+		return nil
+	}
+
+	u, err := res.Request.URL.Parse(skipURL)
+	if err != nil {
+		return err
+	}
+
+	res, err = c.client.Get(u.String())
+	if err != nil {
+		return err
+	}
+	return res.Body.Close()
+}
+
+func confirmPhoneSkipURL(u *url.URL) string {
+	if u == nil || !strings.HasPrefix(u.Path, "/fe/") {
+		return ""
+	}
+	return u.Query().Get("skipUrl")
 }
 
 func (c *Cloud) getCaptcha(captchaURL string) error {
