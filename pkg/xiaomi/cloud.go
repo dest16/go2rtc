@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"strconv"
 	"strings"
@@ -36,8 +37,9 @@ type Cloud struct {
 }
 
 func NewCloud(sid string) *Cloud {
+	jar, _ := cookiejar.New(nil)
 	return &Cloud{
-		client: &http.Client{Timeout: 15 * time.Second},
+		client: &http.Client{Timeout: 15 * time.Second, Jar: jar},
 		sid:    sid,
 	}
 }
@@ -121,8 +123,12 @@ func (c *Cloud) Login(username, password string) error {
 	}
 
 	c.auth = nil
-	c.ssecurity = v2.Ssecurity
-	c.passToken = v2.PassToken
+	if len(v2.Ssecurity) != 0 {
+		c.ssecurity = v2.Ssecurity
+	}
+	if v2.PassToken != "" {
+		c.passToken = v2.PassToken
+	}
 
 	return c.finishAuth(v2.Location)
 }
@@ -314,6 +320,10 @@ func (l *LoginError) Error() string {
 }
 
 func (c *Cloud) finishAuth(location string) error {
+	if location == "" {
+		return errors.New("xiaomi: login response has no location")
+	}
+
 	res, err := c.client.Get(location)
 	if err != nil {
 		return err
@@ -329,7 +339,11 @@ func (c *Cloud) finishAuth(location string) error {
 	var cUserId, serviceToken string
 
 	for res != nil {
-		for _, cookie := range res.Cookies() {
+		cookies := res.Cookies()
+		if c.client.Jar != nil && res.Request != nil && res.Request.URL != nil {
+			cookies = append(cookies, c.client.Jar.Cookies(res.Request.URL)...)
+		}
+		for _, cookie := range cookies {
 			switch cookie.Name {
 			case "userId":
 				c.userID = cookie.Value
@@ -355,12 +369,38 @@ func (c *Cloud) finishAuth(location string) error {
 		res = res.Request.Response
 	}
 
+	missing := make([]string, 0, 5)
+	if c.userID == "" {
+		missing = append(missing, "userId")
+	}
+	if c.passToken == "" {
+		missing = append(missing, "passToken")
+	}
+	if cUserId == "" {
+		missing = append(missing, "cUserId")
+	}
+	if serviceToken == "" {
+		missing = append(missing, "serviceToken")
+	}
+	if len(c.ssecurity) == 0 {
+		missing = append(missing, "ssecurity")
+	}
+	if len(missing) != 0 {
+		return fmt.Errorf("xiaomi: incomplete login response, missing %s", strings.Join(missing, ", "))
+	}
+
 	c.cookies = fmt.Sprintf("userId=%s; cUserId=%s; serviceToken=%s", c.userID, cUserId, serviceToken)
 
 	return nil
 }
 
 func (c *Cloud) LoginWithToken(userID, passToken string) error {
+	if userID == "" || passToken == "" {
+		return errors.New("xiaomi: userId and passToken are required")
+	}
+	c.userID = userID
+	c.passToken = passToken
+
 	req, err := http.NewRequest("GET", "https://account.xiaomi.com/pass/serviceLogin?_json=true&sid="+c.sid, nil)
 	if err != nil {
 		return err
@@ -382,14 +422,24 @@ func (c *Cloud) LoginWithToken(userID, passToken string) error {
 		return err
 	}
 
-	c.ssecurity = v1.Ssecurity
-	c.passToken = v1.PassToken
+	if len(v1.Ssecurity) != 0 {
+		c.ssecurity = v1.Ssecurity
+	}
+	if v1.PassToken != "" {
+		c.passToken = v1.PassToken
+	}
 
 	return c.finishAuth(v1.Location)
 }
 
 func (c *Cloud) UserToken() (string, string) {
 	return c.userID, c.passToken
+}
+
+var ErrUnauthorized = errors.New("xiaomi: unauthorized")
+
+func IsUnauthorized(err error) bool {
+	return errors.Is(err, ErrUnauthorized)
 }
 
 func (c *Cloud) Request(baseURL, apiURL, params string, headers map[string]string) ([]byte, error) {
@@ -435,6 +485,9 @@ func (c *Cloud) Request(baseURL, apiURL, params string, headers map[string]strin
 	defer res.Body.Close()
 
 	if res.StatusCode != http.StatusOK {
+		if res.StatusCode == http.StatusUnauthorized || res.StatusCode == 421 {
+			return nil, fmt.Errorf("%w: %s", ErrUnauthorized, res.Status)
+		}
 		return nil, errors.New(res.Status)
 	}
 
@@ -463,6 +516,10 @@ func (c *Cloud) Request(baseURL, apiURL, params string, headers map[string]strin
 	}
 
 	if res1.Code != 0 {
+		message := strings.ToLower(res1.Message)
+		if res1.Code == http.StatusUnauthorized || res1.Code == 421 || strings.Contains(message, "unauthorized") {
+			return nil, fmt.Errorf("%w: %s", ErrUnauthorized, res1.Message)
+		}
 		return nil, errors.New("xiaomi: " + res1.Message)
 	}
 
