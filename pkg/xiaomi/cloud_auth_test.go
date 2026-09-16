@@ -113,3 +113,21 @@ func TestConfirmPhoneSkipURL(t *testing.T) {
 		t.Fatalf("confirmPhoneSkipURL() accepted non-confirmation URL: %q", got)
 	}
 }
+
+func TestJSONScalarString(t *testing.T) {
+	for name, tc := range map[string]struct {
+		raw  string
+		want string
+	}{
+		"string": {raw: `"123456"`, want: "123456"},
+		"number": {raw: "123456", want: "123456"},
+		"null":   {raw: "null", want: ""},
+		"object": {raw: "{}", want: ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := jsonScalarString([]byte(tc.raw)); got != tc.want {
+				t.Fatalf("jsonScalarString(%s) = %q, want %q", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
