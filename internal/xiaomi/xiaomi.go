@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/AlexxIT/go2rtc/internal/api"
 	"github.com/AlexxIT/go2rtc/internal/app"
@@ -48,6 +49,7 @@ func Init() {
 	})
 
 	api.HandleFunc("api/xiaomi", apiXiaomi)
+	go refreshCloudSessions()
 }
 
 var log zerolog.Logger
@@ -101,8 +103,29 @@ func refreshCloud(userID string, stale *xiaomi.Cloud) (*xiaomi.Cloud, error) {
 	if current := clouds[userID]; current != nil && current != stale {
 		return current, nil
 	}
-	delete(clouds, userID)
 	return loginCloudLocked(userID)
+}
+
+const cloudRefreshInterval = 12 * time.Hour
+
+func refreshCloudSessions() {
+	ticker := time.NewTicker(cloudRefreshInterval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		cloudsMu.Lock()
+		active := make(map[string]*xiaomi.Cloud, len(clouds))
+		for userID, cloud := range clouds {
+			active[userID] = cloud
+		}
+		cloudsMu.Unlock()
+
+		for userID, stale := range active {
+			if _, err := refreshCloud(userID, stale); err != nil {
+				log.Warn().Err(err).Str("user", userID).Msg("xiaomi: periodic cloud session refresh failed")
+			}
+		}
+	}
 }
 
 func cloudRequest(userID, region, apiURL, params string) ([]byte, error) {
