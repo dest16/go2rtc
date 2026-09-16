@@ -58,12 +58,28 @@ func TestLoginWithTokenRejectsEmptyCredentials(t *testing.T) {
 
 func TestRequestMarksAuthorizationFailures(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("ParseForm() error = %v", err)
+		}
+		if got := r.Form.Get("ssecurity"); got != "c2VjcmV0" {
+			t.Errorf("ssecurity = %q", got)
+		}
+		if got := r.Header.Get("X-XIAOMI-PROTOCAL-FLAG-CLI"); got != "PROTOCAL-HTTP2" {
+			t.Errorf("protocol header = %q", got)
+		}
+		if got := r.Header.Get("MIOT-ENCRYPT-ALGORITHM"); got != "ENCRYPT-RC4" {
+			t.Errorf("encryption header = %q", got)
+		}
+		if got := r.Header.Get("Cookie"); !strings.Contains(got, "yetAnotherServiceToken=service-token") {
+			t.Errorf("auth cookies = %q", got)
+		}
 		w.WriteHeader(421)
 	}))
 	defer server.Close()
 
 	cloud := NewCloud("xiaomiio")
 	cloud.ssecurity = []byte("secret")
+	cloud.cookies = "serviceToken=service-token; yetAnotherServiceToken=service-token"
 	_, err := cloud.Request(server.URL, "/test", "{}", nil)
 	if !IsUnauthorized(err) {
 		t.Fatalf("Request() error = %v, want ErrUnauthorized", err)
