@@ -499,7 +499,10 @@ func (c *Cloud) finishAuth(location string) error {
 		return fmt.Errorf("xiaomi: incomplete login response, missing %s", strings.Join(missing, ", "))
 	}
 
-	c.cookies = fmt.Sprintf("userId=%s; cUserId=%s; serviceToken=%s", c.userID, cUserId, serviceToken)
+	c.cookies = fmt.Sprintf(
+		"userId=%s; cUserId=%s; serviceToken=%s; yetAnotherServiceToken=%s; locale=zh_CN; timezone=GMT+08:00; is_daylight=0; dst_offset=0; channel=MI_APP_STORE",
+		c.userID, cUserId, serviceToken, serviceToken,
+	)
 
 	return nil
 }
@@ -573,8 +576,10 @@ func (c *Cloud) Request(baseURL, apiURL, params string, headers map[string]strin
 	// 3. add signature for encrypted data and hash params
 	form.Set("signature", genSignature64("POST", apiURL, form, signedNonce))
 
-	// 4. add nonce
+	// 4. add nonce and the original session security value. Xiaomi's current
+	// RC4 endpoint rejects otherwise valid encrypted requests without ssecurity.
 	form.Set("_nonce", base64.StdEncoding.EncodeToString(nonce))
+	form.Set("ssecurity", base64.StdEncoding.EncodeToString(c.ssecurity))
 
 	req, err := http.NewRequest("POST", baseURL+apiURL, strings.NewReader(form.Encode()))
 	if err != nil {
@@ -583,6 +588,10 @@ func (c *Cloud) Request(baseURL, apiURL, params string, headers map[string]strin
 
 	req.Header.Set("Cookie", c.cookies)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept-Encoding", "identity")
+	req.Header.Set("X-XIAOMI-PROTOCAL-FLAG-CLI", "PROTOCAL-HTTP2")
+	req.Header.Set("MIOT-ENCRYPT-ALGORITHM", "ENCRYPT-RC4")
+	req.Header.Set("User-Agent", "Android-7.1.1-1.0.0-ONEPLUS A3010-136 APP/xiaomi.smarthome APPV/62830")
 
 	for k, v := range headers {
 		req.Header.Set(k, v)
