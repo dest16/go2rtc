@@ -78,6 +78,9 @@ func TestFinishVerifyFollowsConfirmPhoneSkipURL(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/verify":
+			http.SetCookie(w, &http.Cookie{Name: "userId", Value: "verified-user", Path: "/"})
+			http.SetCookie(w, &http.Cookie{Name: "passToken", Value: "verified-token", Path: "/"})
+			w.Header().Set("Extension-Pragma", `{"ssecurity":"dmVyaWZ5LXNlY3JldA=="}`)
 			http.Redirect(w, r, "/fe/confirm?skipUrl=%2Fdone", http.StatusFound)
 		case "/fe/confirm":
 			w.WriteHeader(http.StatusOK)
@@ -96,6 +99,13 @@ func TestFinishVerifyFollowsConfirmPhoneSkipURL(t *testing.T) {
 	}
 	if !skipped {
 		t.Fatal("finishVerify() did not follow the confirm-phone skip URL")
+	}
+	userID, token := cloud.UserToken()
+	if userID != "verified-user" || token != "verified-token" {
+		t.Fatalf("verification credentials were not preserved: %q, %q", userID, token)
+	}
+	if string(cloud.ssecurity) != "verify-secret" {
+		t.Fatalf("verification ssecurity was not preserved: %q", cloud.ssecurity)
 	}
 }
 
