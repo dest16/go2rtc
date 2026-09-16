@@ -5,8 +5,13 @@ on:
   push:
     branches:
       - 'master'
+      - 'codex/xiaomi-auth-refresh'
     tags:
       - 'v*'
+
+permissions:
+  contents: read
+  packages: write
 
 jobs:
   build-binaries:
