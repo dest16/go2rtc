@@ -220,6 +220,12 @@ func (c *Cloud) finishVerify(location string) error {
 	}
 	defer res.Body.Close()
 
+	// The verification redirect can carry passToken in cookies and ssecurity in
+	// Extension-Pragma. They may disappear from the later service redirect.
+	if err = c.capturePersistentAuth(res); err != nil {
+		return err
+	}
+
 	// Xiaomi can redirect verified accounts to a confirm-phone page. The page
 	// carries a skipUrl back to the service login flow.
 	skipURL := confirmPhoneSkipURL(res.Request.URL)
@@ -236,7 +242,44 @@ func (c *Cloud) finishVerify(location string) error {
 	if err != nil {
 		return err
 	}
-	return res.Body.Close()
+	defer res.Body.Close()
+
+	return c.capturePersistentAuth(res)
+}
+
+func (c *Cloud) capturePersistentAuth(res *http.Response) error {
+	for res != nil {
+		cookies := res.Cookies()
+		if c.client.Jar != nil && res.Request != nil && res.Request.URL != nil {
+			cookies = append(cookies, c.client.Jar.Cookies(res.Request.URL)...)
+		}
+		for _, cookie := range cookies {
+			switch cookie.Name {
+			case "userId":
+				c.userID = cookie.Value
+			case "passToken":
+				c.passToken = cookie.Value
+			}
+		}
+
+		if s := res.Header.Get("Extension-Pragma"); s != "" {
+			var v struct {
+				Ssecurity []byte `json:"ssecurity"`
+			}
+			if err := json.Unmarshal([]byte(s), &v); err != nil {
+				return err
+			}
+			if len(v.Ssecurity) != 0 {
+				c.ssecurity = v.Ssecurity
+			}
+		}
+
+		if res.Request == nil {
+			break
+		}
+		res = res.Request.Response
+	}
+	return nil
 }
 
 func confirmPhoneSkipURL(u *url.URL) string {
